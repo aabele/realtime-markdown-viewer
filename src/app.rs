@@ -14,6 +14,21 @@ pub enum RenderMode {
     SyntaxHighlight,
 }
 
+#[derive(Clone)]
+pub struct LinkInfo {
+    pub line_idx: u16,
+    pub col_start: u16,
+    pub col_end: u16,
+    pub url: String,
+}
+
+pub struct ContextMenu {
+    pub x: u16,
+    pub y: u16,
+    pub url: String,
+    pub selected: usize,
+}
+
 pub struct Tab {
     pub path: PathBuf,
     pub scroll_offset: u16,
@@ -21,6 +36,7 @@ pub struct Tab {
     pub rendered_line_count: u16,
     pub viewport_height: u16,
     pub cached_lines: Vec<ratatui::text::Line<'static>>,
+    pub links: Vec<LinkInfo>,
 }
 
 pub struct App {
@@ -38,6 +54,10 @@ pub struct App {
     pub sidebar_width: u16,
     pub resizing_sidebar: bool,
     pub theme_variant: ThemeVariant,
+    pub selection_start: Option<(u16, u16)>,
+    pub selection_end: Option<(u16, u16)>,
+    pub selecting: bool,
+    pub context_menu: Option<ContextMenu>,
 }
 
 impl App {
@@ -57,6 +77,10 @@ impl App {
             sidebar_width: 30,
             resizing_sidebar: false,
             theme_variant: ThemeVariant::Mocha,
+            selection_start: None,
+            selection_end: None,
+            selecting: false,
+            context_menu: None,
         }
     }
 
@@ -82,6 +106,7 @@ impl App {
             rendered_line_count: 0,
             viewport_height: 0,
             cached_lines: Vec::new(),
+            links: Vec::new(),
         });
         self.active_tab = self.tabs.len() - 1;
         self.focus = Focus::Content;
@@ -156,6 +181,62 @@ impl App {
         for tab in &mut self.tabs {
             tab.cached_lines.clear();
         }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+        self.selecting = false;
+    }
+
+    pub fn normalized_selection(&self) -> Option<((u16, u16), (u16, u16))> {
+        let start = self.selection_start?;
+        let end = self.selection_end?;
+        if start <= end {
+            Some((start, end))
+        } else {
+            Some((end, start))
+        }
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.normalized_selection()?;
+        let tab = self.tabs.get(self.active_tab)?;
+
+        let start_idx = start.0 as usize;
+        let end_idx = (end.0 as usize + 1).min(tab.cached_lines.len());
+        let mut result = String::new();
+        for (i, line) in tab.cached_lines[start_idx..end_idx].iter().enumerate() {
+            let line_idx = start.0 + i as u16;
+            let line_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if start.0 == end.0 {
+                let from = (start.1 as usize).min(line_text.len());
+                let to = (end.1 as usize).min(line_text.len());
+                result.push_str(&line_text[from..to]);
+            } else if line_idx == start.0 {
+                let from = (start.1 as usize).min(line_text.len());
+                result.push_str(&line_text[from..]);
+                result.push('\n');
+            } else if line_idx == end.0 {
+                let to = (end.1 as usize).min(line_text.len());
+                result.push_str(&line_text[..to]);
+            } else {
+                result.push_str(&line_text);
+                result.push('\n');
+            }
+        }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    pub fn find_link_at(&self, line_idx: u16, col: u16) -> Option<&LinkInfo> {
+        let tab = self.tabs.get(self.active_tab)?;
+        tab.links
+            .iter()
+            .find(|link| link.line_idx == line_idx && col >= link.col_start && col < link.col_end)
     }
 
     pub fn refresh_file_list(&mut self, files: Vec<PathBuf>) {

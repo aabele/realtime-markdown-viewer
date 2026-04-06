@@ -57,7 +57,7 @@ rtm .
 | ? | Toggle help overlay |
 | q / Esc | Quit |
 
-Mouse works everywhere -- click sidebar items, click tabs, scroll with wheel, drag sidebar border to resize.
+Mouse works everywhere -- click sidebar items, click tabs, scroll with wheel, drag sidebar border to resize, drag to select text (auto-copies to clipboard), right-click links for context menu.
 
 ## Configuration
 
@@ -87,6 +87,8 @@ All settings are optional. Defaults are used for missing values.
 - Tab-based file viewing
 - Fuzzy file search
 - Help overlay on first launch and via `?`
+- Text selection with clipboard copy (mouse drag)
+- Link context menu (right-click) -- open in browser or copy URL
 
 ## License
 

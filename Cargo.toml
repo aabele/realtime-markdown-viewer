@@ -18,3 +18,5 @@ syntect = { version = "5.3", default-features = false, features = ["default-fanc
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
+arboard = "3"
+open = "5"

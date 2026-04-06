@@ -45,6 +45,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
     if app.show_help {
         draw_help_overlay(frame, p, area);
     }
+
+    if let Some(menu) = &app.context_menu {
+        draw_context_menu(frame, p, menu);
+    }
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, p: &Palette, area: Rect) {
@@ -136,9 +140,16 @@ fn draw_content(
     };
 
     if tab.cached_lines.is_empty() && !tab.content.is_empty() {
-        tab.cached_lines = match render_mode {
-            RenderMode::Formatted => render_markdown(&tab.content, theme_variant),
-            RenderMode::SyntaxHighlight => highlighter.highlight_markdown(&tab.content),
+        match render_mode {
+            RenderMode::Formatted => {
+                let (rendered, link_info) = render_markdown(&tab.content, theme_variant);
+                tab.cached_lines = rendered;
+                tab.links = link_info;
+            }
+            RenderMode::SyntaxHighlight => {
+                tab.cached_lines = highlighter.highlight_markdown(&tab.content);
+                tab.links.clear();
+            }
         };
     }
 
@@ -174,6 +185,35 @@ fn draw_content(
             .thumb_style(Style::default().fg(p.mauve))
             .track_style(Style::default().fg(p.surface0));
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
+
+    if let Some((sel_start, sel_end)) = app.normalized_selection() {
+        let inner_x = area.x + 1;
+        let inner_y = area.y + 1;
+        let inner_width = area.width.saturating_sub(2);
+        let sel_style = Style::default().bg(p.surface2).fg(p.text);
+
+        for screen_row in 0..content_height {
+            let line_idx = scroll_offset + screen_row;
+            if line_idx < sel_start.0 || line_idx > sel_end.0 {
+                continue;
+            }
+            let (col_start, col_end) =
+                selection_col_range(line_idx, sel_start, sel_end, inner_width);
+
+            for col in col_start..col_end.min(inner_width) {
+                let cell_x = inner_x + col;
+                let cell_y = inner_y + screen_row;
+                if cell_x < area.x + area.width - 1 && cell_y < area.y + area.height - 1 {
+                    if let Some(cell) = frame
+                        .buffer_mut()
+                        .cell_mut(ratatui::layout::Position::new(cell_x, cell_y))
+                    {
+                        cell.set_style(sel_style);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -227,8 +267,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, p: &Palette, area: Rect) {
 }
 
 fn draw_help_overlay(frame: &mut Frame, p: &Palette, area: Rect) {
-    let help_width: u16 = 50;
-    let help_height: u16 = 19;
+    let help_width: u16 = 52;
+    let help_height: u16 = 22;
     let x = area.width.saturating_sub(help_width) / 2;
     let y = area.height.saturating_sub(help_height) / 2;
     let help_area = Rect::new(
@@ -257,8 +297,11 @@ fn draw_help_overlay(frame: &mut Frame, p: &Palette, area: Rect) {
         help_line("?", "toggle this help", p),
         help_line("q / Esc", "quit", p),
         Line::default(),
+        help_line("drag", "select text (auto-copy)", p),
+        help_line("right-click", "link context menu", p),
+        Line::default(),
         Line::from(Span::styled(
-            " Mouse works everywhere (click, scroll) ",
+            " Mouse: click, scroll, drag to resize ",
             Style::default().fg(p.overlay0),
         )),
         Line::default(),
@@ -287,4 +330,56 @@ fn help_line(key: &str, desc: &str, p: &Palette) -> Line<'static> {
         ),
         Span::styled(desc.to_string(), Style::default().fg(p.text)),
     ])
+}
+
+fn selection_col_range(
+    line_idx: u16,
+    sel_start: (u16, u16),
+    sel_end: (u16, u16),
+    default_end: u16,
+) -> (u16, u16) {
+    if sel_start.0 == sel_end.0 {
+        (sel_start.1, sel_end.1)
+    } else if line_idx == sel_start.0 {
+        (sel_start.1, default_end)
+    } else if line_idx == sel_end.0 {
+        (0, sel_end.1)
+    } else {
+        (0, default_end)
+    }
+}
+
+fn draw_context_menu(frame: &mut Frame, p: &Palette, menu: &crate::app::ContextMenu) {
+    let items = ["Open in browser", "Copy URL"];
+    let width: u16 = 20;
+    let height: u16 = (items.len() + 2) as u16;
+    let menu_area = Rect::new(menu.x, menu.y, width, height);
+
+    frame.render_widget(Clear, menu_area);
+
+    let menu_items: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            if i == menu.selected {
+                Line::from(Span::styled(
+                    format!(" > {} ", item),
+                    Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    format!("   {} ", item),
+                    Style::default().fg(p.text),
+                ))
+            }
+        })
+        .collect();
+
+    let para = Paragraph::new(menu_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(p.mauve))
+            .style(Style::default().bg(p.mantle)),
+    );
+    frame.render_widget(para, menu_area);
 }

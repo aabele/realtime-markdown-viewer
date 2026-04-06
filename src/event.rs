@@ -5,14 +5,21 @@ use std::time::Duration;
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 
-use crate::app::{App, Focus, RenderMode};
+use crate::app::{App, ContextMenu, Focus, RenderMode};
 use crate::config::Config;
 use crate::markdown::highlight::Highlighter;
 use crate::ui;
 use crate::watcher;
 use crate::Tui;
+
+const POLL_INTERVAL_MS: u64 = 100;
+const PAGE_SCROLL_LINES: u16 = 10;
+const MOUSE_SCROLL_LINES: u16 = 3;
+const MIN_SIDEBAR_WIDTH: u16 = 10;
+const MIN_CONTENT_WIDTH: u16 = 20;
+const CONTEXT_MENU_ITEMS: usize = 2;
 
 pub fn run(terminal: &mut Tui, path: &Path, config: &Config) -> io::Result<()> {
     let files = watcher::discover_md_files(path);
@@ -44,7 +51,7 @@ pub fn run(terminal: &mut Tui, path: &Path, config: &Config) -> io::Result<()> {
             return Ok(());
         }
 
-        if !event::poll(Duration::from_millis(100))? {
+        if !event::poll(Duration::from_millis(POLL_INTERVAL_MS))? {
             continue;
         }
 
@@ -70,6 +77,11 @@ pub fn run(terminal: &mut Tui, path: &Path, config: &Config) -> io::Result<()> {
 }
 
 fn handle_key(app: &mut App, code: KeyCode) {
+    if app.context_menu.is_some() {
+        handle_context_menu_key(app, code);
+        return;
+    }
+
     if app.show_help {
         app.show_help = false;
         return;
@@ -100,12 +112,12 @@ fn handle_key(app: &mut App, code: KeyCode) {
         },
         KeyCode::Char('d') => {
             if app.focus == Focus::Content {
-                app.scroll_down(10);
+                app.scroll_down(PAGE_SCROLL_LINES);
             }
         }
         KeyCode::Char('u') => {
             if app.focus == Focus::Content {
-                app.scroll_up(10);
+                app.scroll_up(PAGE_SCROLL_LINES);
             }
         }
         KeyCode::Char('G') => {
@@ -138,6 +150,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Tab => {
             if !app.tabs.is_empty() {
                 app.active_tab = (app.active_tab + 1) % app.tabs.len();
+                app.clear_selection();
             }
         }
         KeyCode::BackTab => {
@@ -147,6 +160,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
                 } else {
                     app.active_tab - 1
                 };
+                app.clear_selection();
             }
         }
         KeyCode::Char('m') => {
@@ -165,6 +179,40 @@ fn handle_key(app: &mut App, code: KeyCode) {
             app.search_query.clear();
         }
         _ => {}
+    }
+}
+
+fn handle_context_menu_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.context_menu = None;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(m) = &mut app.context_menu {
+                m.selected = m.selected.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(m) = &mut app.context_menu {
+                m.selected = (m.selected + 1).min(CONTEXT_MENU_ITEMS - 1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(menu) = app.context_menu.take() {
+                match menu.selected {
+                    0 => {
+                        let _ = open::that(&menu.url);
+                    }
+                    1 => {
+                        copy_to_clipboard(&menu.url);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {
+            app.context_menu = None;
+        }
     }
 }
 
@@ -196,8 +244,15 @@ fn handle_mouse(terminal: &mut Tui, app: &mut App, mouse: MouseEvent) -> io::Res
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            if app.context_menu.is_some() {
+                app.context_menu = None;
+                return Ok(());
+            }
+
             let col = mouse.column;
             let row = mouse.row;
+
+            app.clear_selection();
 
             if col == border_col || col == border_col.saturating_sub(1) {
                 app.resizing_sidebar = true;
@@ -215,29 +270,77 @@ fn handle_mouse(terminal: &mut Tui, app: &mut App, mouse: MouseEvent) -> io::Res
                     let tab_click = estimate_tab_index(app, col - content_area.x);
                     if tab_click < app.tabs.len() {
                         app.active_tab = tab_click;
+                        app.clear_selection();
+                    }
+                } else if is_content_body(row, col, content_area) {
+                    if let Some(tab) = app.tabs.get(app.active_tab) {
+                        let (line, c) =
+                            screen_to_content(row, col, content_area, tab.scroll_offset);
+                        app.selection_start = Some((line, c));
+                        app.selection_end = Some((line, c));
+                        app.selecting = true;
                     }
                 }
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            app.resizing_sidebar = false;
+            if app.resizing_sidebar {
+                app.resizing_sidebar = false;
+            } else if app.selecting {
+                app.selecting = false;
+                if let Some(text) = app.selected_text() {
+                    copy_to_clipboard(&text);
+                }
+            }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if app.resizing_sidebar {
-                let new_width = mouse.column.max(10).min(area.width.saturating_sub(20));
+                let new_width = mouse
+                    .column
+                    .max(MIN_SIDEBAR_WIDTH)
+                    .min(area.width.saturating_sub(MIN_CONTENT_WIDTH));
                 app.sidebar_width = new_width;
+            } else if app.selecting {
+                if let Some(tab) = app.tabs.get(app.active_tab) {
+                    let row = mouse.row;
+                    let col = mouse.column;
+                    if row > content_area.y && col > content_area.x {
+                        let (line, c) =
+                            screen_to_content(row, col, content_area, tab.scroll_offset);
+                        app.selection_end = Some((line, c));
+                    }
+                }
+            }
+        }
+        MouseEventKind::Down(MouseButton::Right) => {
+            if content_area.contains(mouse_pos)
+                && is_content_body(mouse.row, mouse.column, content_area)
+            {
+                if let Some(tab) = app.tabs.get(app.active_tab) {
+                    let (line, col) =
+                        screen_to_content(mouse.row, mouse.column, content_area, tab.scroll_offset);
+                    if let Some(link) = app.find_link_at(line, col) {
+                        let url = link.url.clone();
+                        app.context_menu = Some(ContextMenu {
+                            x: mouse.column,
+                            y: mouse.row,
+                            url,
+                            selected: 0,
+                        });
+                    }
+                }
             }
         }
         MouseEventKind::ScrollUp => {
             if content_area.contains(mouse_pos) {
-                app.scroll_up(3);
+                app.scroll_up(MOUSE_SCROLL_LINES);
             } else if sidebar_area.contains(mouse_pos) {
                 app.sidebar_up();
             }
         }
         MouseEventKind::ScrollDown => {
             if content_area.contains(mouse_pos) {
-                app.scroll_down(3);
+                app.scroll_down(MOUSE_SCROLL_LINES);
             } else if sidebar_area.contains(mouse_pos) {
                 app.sidebar_down();
             }
@@ -246,6 +349,22 @@ fn handle_mouse(terminal: &mut Tui, app: &mut App, mouse: MouseEvent) -> io::Res
     }
 
     Ok(())
+}
+
+fn screen_to_content(row: u16, col: u16, content_area: Rect, scroll_offset: u16) -> (u16, u16) {
+    let line = (row - content_area.y - 1) + scroll_offset;
+    let c = col - content_area.x - 1;
+    (line, c)
+}
+
+fn is_content_body(row: u16, col: u16, area: Rect) -> bool {
+    row > area.y && row < area.y + area.height - 1 && col > area.x && col < area.x + area.width - 1
+}
+
+fn copy_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text);
+    }
 }
 
 fn estimate_tab_index(app: &App, col_offset: u16) -> usize {

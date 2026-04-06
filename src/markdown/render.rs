@@ -28,7 +28,10 @@ impl Colors {
     }
 }
 
-pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>> {
+pub fn render_markdown(
+    source: &str,
+    variant: ThemeVariant,
+) -> (Vec<Line<'static>>, Vec<crate::app::LinkInfo>) {
     let p = theme::palette(variant);
     let c = Colors::from_palette(p);
     let mut options = Options::empty();
@@ -44,6 +47,11 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
     let mut ordered_counters: Vec<Option<u64>> = Vec::new();
     let mut in_code_block = false;
     let mut blockquote_depth: usize = 0;
+    let mut current_col: u16 = 0;
+    let mut current_line_idx: u16 = 0;
+    let mut link_start_col: Option<u16> = None;
+    let mut current_link_url: Option<String> = None;
+    let mut links: Vec<crate::app::LinkInfo> = Vec::new();
 
     for event in parser {
         match event {
@@ -58,13 +66,19 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
             }
             Event::End(TagEnd::Heading(_)) => {
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
                 lines.push(Line::default());
+                current_line_idx += 1;
                 style_stack.pop();
             }
             Event::Start(Tag::Paragraph) => {}
             Event::End(TagEnd::Paragraph) => {
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
                 lines.push(Line::default());
+                current_line_idx += 1;
             }
             Event::Start(Tag::Emphasis) => {
                 let base = current_style(&style_stack);
@@ -90,11 +104,16 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
             Event::Start(Tag::CodeBlock(_)) => {
                 in_code_block = true;
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
                 lines.push(Line::default());
+                current_line_idx += 1;
             }
             Event::Start(Tag::BlockQuote(_)) => {
                 blockquote_depth += 1;
@@ -102,6 +121,8 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
             Event::End(TagEnd::BlockQuote(_)) => {
                 blockquote_depth = blockquote_depth.saturating_sub(1);
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
             }
             Event::Start(Tag::List(ordered)) => {
                 list_depth += 1;
@@ -134,16 +155,30 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
             }
             Event::End(TagEnd::Item) => {
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
             }
-            Event::Start(Tag::Link { .. }) => {
+            Event::Start(Tag::Link { dest_url, .. }) => {
                 style_stack.push(
                     Style::default()
                         .fg(c.link)
                         .add_modifier(Modifier::UNDERLINED),
                 );
+                link_start_col = Some(current_col);
+                current_link_url = Some(dest_url.to_string());
             }
             Event::End(TagEnd::Link) => {
                 style_stack.pop();
+                if let (Some(start_col), Some(url)) =
+                    (link_start_col.take(), current_link_url.take())
+                {
+                    links.push(crate::app::LinkInfo {
+                        line_idx: current_line_idx,
+                        col_start: start_col,
+                        col_end: current_col,
+                        url,
+                    });
+                }
             }
             Event::Text(text) => {
                 if in_code_block {
@@ -153,16 +188,21 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
                             Style::default().fg(c.code).bg(c.code_block_bg),
                         ));
                         flush_line(&mut lines, &mut current_spans);
+                        current_col = 0;
+                        current_line_idx += 1;
                     }
                 } else {
                     if blockquote_depth > 0 && current_spans.is_empty() {
                         let prefix = "> ".repeat(blockquote_depth);
+                        current_col += prefix.len() as u16;
                         current_spans.push(Span::styled(prefix, Style::default().fg(c.blockquote)));
                     }
+                    current_col += text.len() as u16;
                     current_spans.push(Span::styled(text.to_string(), current_style(&style_stack)));
                 }
             }
             Event::Code(code) => {
+                current_col += (code.len() + 2) as u16;
                 current_spans.push(Span::styled(
                     format!("`{}`", code),
                     Style::default().fg(c.code).bg(c.code_block_bg),
@@ -170,14 +210,20 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
             }
             Event::SoftBreak | Event::HardBreak => {
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
             }
             Event::Rule => {
                 flush_line(&mut lines, &mut current_spans);
+                current_col = 0;
+                current_line_idx += 1;
                 lines.push(Line::from(Span::styled(
                     "-".repeat(40),
                     Style::default().fg(c.rule),
                 )));
+                current_line_idx += 1;
                 lines.push(Line::default());
+                current_line_idx += 1;
             }
             Event::TaskListMarker(checked) => {
                 let marker_str = if checked { "[x] " } else { "[ ] " };
@@ -190,7 +236,7 @@ pub fn render_markdown(source: &str, variant: ThemeVariant) -> Vec<Line<'static>
         }
     }
     flush_line(&mut lines, &mut current_spans);
-    lines
+    (lines, links)
 }
 
 fn flush_line(lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>) {
