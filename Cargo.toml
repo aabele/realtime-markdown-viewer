@@ -1,0 +1,20 @@
+[package]
+name = "rtm"
+version = "0.1.0"
+edition = "2021"
+description = "Realtime Markdown - TUI viewer with live reload"
+
+[[bin]]
+name = "rtm"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+pulldown-cmark = { version = "0.13", features = ["simd"] }
+notify = "7.0"
+notify-debouncer-mini = "0.5"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
