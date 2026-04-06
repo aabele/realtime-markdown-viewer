@@ -49,6 +49,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
     if let Some(menu) = &app.context_menu {
         draw_context_menu(frame, p, menu);
     }
+
+    if app.show_excludes {
+        draw_excludes_overlay(frame, app, p, area);
+    }
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, p: &Palette, area: Rect) {
@@ -268,7 +272,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, p: &Palette, area: Rect) {
 
 fn draw_help_overlay(frame: &mut Frame, p: &Palette, area: Rect) {
     let help_width: u16 = 52;
-    let help_height: u16 = 22;
+    let help_height: u16 = 23;
     let x = area.width.saturating_sub(help_width) / 2;
     let y = area.height.saturating_sub(help_height) / 2;
     let help_area = Rect::new(
@@ -292,6 +296,7 @@ fn draw_help_overlay(frame: &mut Frame, p: &Palette, area: Rect) {
         help_line("m", "formatted / syntax highlight", p),
         help_line("t", "toggle mocha / latte theme", p),
         help_line("/", "search files", p),
+        help_line("e", "exclude directories", p),
         help_line("d / u", "scroll 10 lines", p),
         help_line("g / G", "go to top / bottom", p),
         help_line("?", "toggle this help", p),
@@ -347,6 +352,77 @@ fn selection_col_range(
     } else {
         (0, default_end)
     }
+}
+
+fn draw_excludes_overlay(frame: &mut Frame, app: &App, p: &Palette, area: Rect) {
+    let overlay_width: u16 = 50;
+    let list_lines = app.exclude_dirs.len().max(1) as u16;
+    let overlay_height: u16 = list_lines + 7;
+    let x = area.width.saturating_sub(overlay_width) / 2;
+    let y = area.height.saturating_sub(overlay_height) / 2;
+    let overlay_area = Rect::new(
+        x,
+        y,
+        overlay_width.min(area.width),
+        overlay_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, overlay_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        " Excluded directories ",
+        Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    if app.exclude_dirs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(p.overlay0),
+        )));
+    } else {
+        for (i, dir) in app.exclude_dirs.iter().enumerate() {
+            let marker = if i == app.exclude_selected {
+                "> "
+            } else {
+                "  "
+            };
+            let style = if i == app.exclude_selected {
+                Style::default().fg(p.peach).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{}{}", marker, dir),
+                style,
+            )));
+        }
+    }
+
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled(" Add: ", Style::default().fg(p.subtext0)),
+        Span::styled(
+            format!("{}_", app.exclude_input),
+            Style::default().fg(p.green),
+        ),
+    ]));
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        " Enter=add  Del=remove  Esc=close ",
+        Style::default().fg(p.overlay0),
+    )));
+
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(p.mauve))
+            .style(Style::default().bg(p.mantle))
+            .title(Span::styled(" Excludes ", Style::default().fg(p.mauve))),
+    );
+    frame.render_widget(para, overlay_area);
 }
 
 fn draw_context_menu(frame: &mut Frame, p: &Palette, menu: &crate::app::ContextMenu) {

@@ -22,11 +22,13 @@ const MIN_CONTENT_WIDTH: u16 = 20;
 const CONTEXT_MENU_ITEMS: usize = 2;
 
 pub fn run(terminal: &mut Tui, path: &Path, config: &Config) -> io::Result<()> {
-    let files = watcher::discover_md_files(path);
+    let files = watcher::discover_md_files(path, &config.exclude_dirs);
     let mut app = App::new(path.to_path_buf(), files);
     app.theme_variant = config.theme;
     app.sidebar_width = config.sidebar_width;
     app.render_mode = config.render_mode;
+    app.exclude_dirs = config.exclude_dirs.clone();
+    app.show_help = config.first_run;
     let highlighter = Highlighter::new();
 
     let (watch_rx, _debouncer) = watcher::start_watcher(path)
@@ -41,7 +43,7 @@ pub fn run(terminal: &mut Tui, path: &Path, config: &Config) -> io::Result<()> {
                     app.reload_file(&changed_path);
                 }
                 watcher::WatchEvent::Rescan => {
-                    let files = watcher::discover_md_files(path);
+                    let files = watcher::discover_md_files(path, &app.exclude_dirs);
                     app.refresh_file_list(files);
                 }
             }
@@ -61,7 +63,9 @@ pub fn run(terminal: &mut Tui, path: &Path, config: &Config) -> io::Result<()> {
                 kind: KeyEventKind::Press,
                 ..
             }) => {
-                if app.searching {
+                if app.show_excludes {
+                    handle_exclude_input(&mut app, path, code);
+                } else if app.searching {
                     handle_search_input(&mut app, code);
                 } else {
                     handle_key(&mut app, code);
@@ -178,6 +182,11 @@ fn handle_key(app: &mut App, code: KeyCode) {
             app.searching = true;
             app.search_query.clear();
         }
+        KeyCode::Char('e') => {
+            app.show_excludes = true;
+            app.exclude_input.clear();
+            app.exclude_selected = 0;
+        }
         _ => {}
     }
 }
@@ -234,6 +243,52 @@ fn handle_search_input(app: &mut App, code: KeyCode) {
         _ => {}
     }
     app.sidebar_selected = 0;
+}
+
+fn handle_exclude_input(app: &mut App, root: &Path, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.show_excludes = false;
+            app.exclude_input.clear();
+        }
+        KeyCode::Enter => {
+            let input = app.exclude_input.trim().to_string();
+            if !input.is_empty() && !app.exclude_dirs.contains(&input) {
+                app.exclude_dirs.push(input);
+                crate::config::save_exclude_dirs(&app.exclude_dirs);
+                let files = watcher::discover_md_files(root, &app.exclude_dirs);
+                app.refresh_file_list(files);
+            }
+            app.exclude_input.clear();
+        }
+        KeyCode::Backspace => {
+            app.exclude_input.pop();
+        }
+        KeyCode::Char(c) => {
+            app.exclude_input.push(c);
+        }
+        KeyCode::Delete => {
+            if !app.exclude_dirs.is_empty() {
+                let idx = app.exclude_selected.min(app.exclude_dirs.len() - 1);
+                app.exclude_dirs.remove(idx);
+                if app.exclude_selected > 0 && app.exclude_selected >= app.exclude_dirs.len() {
+                    app.exclude_selected = app.exclude_dirs.len().saturating_sub(1);
+                }
+                crate::config::save_exclude_dirs(&app.exclude_dirs);
+                let files = watcher::discover_md_files(root, &app.exclude_dirs);
+                app.refresh_file_list(files);
+            }
+        }
+        KeyCode::Up => {
+            app.exclude_selected = app.exclude_selected.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            if !app.exclude_dirs.is_empty() {
+                app.exclude_selected = (app.exclude_selected + 1).min(app.exclude_dirs.len() - 1);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn handle_mouse(terminal: &mut Tui, app: &mut App, mouse: MouseEvent) -> io::Result<()> {

@@ -10,14 +10,14 @@ pub enum WatchEvent {
     Rescan,
 }
 
-pub fn discover_md_files(root: &Path) -> Vec<PathBuf> {
+pub fn discover_md_files(root: &Path, exclude_dirs: &[String]) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_md_files(root, &mut files);
+    collect_md_files(root, &mut files, exclude_dirs);
     files.sort();
     files
 }
 
-fn collect_md_files(dir: &Path, files: &mut Vec<PathBuf>) {
+fn collect_md_files(dir: &Path, files: &mut Vec<PathBuf>, exclude_dirs: &[String]) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -25,7 +25,14 @@ fn collect_md_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_md_files(&path, files);
+            let dir_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if exclude_dirs.iter().any(|ex| ex == dir_name) {
+                continue;
+            }
+            collect_md_files(&path, files, exclude_dirs);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             files.push(path);
         }

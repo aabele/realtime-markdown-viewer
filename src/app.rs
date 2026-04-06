@@ -58,6 +58,10 @@ pub struct App {
     pub selection_end: Option<(u16, u16)>,
     pub selecting: bool,
     pub context_menu: Option<ContextMenu>,
+    pub exclude_dirs: Vec<String>,
+    pub show_excludes: bool,
+    pub exclude_input: String,
+    pub exclude_selected: usize,
 }
 
 impl App {
@@ -73,7 +77,7 @@ impl App {
             search_query: String::new(),
             searching: false,
             should_quit: false,
-            show_help: true,
+            show_help: false,
             sidebar_width: 30,
             resizing_sidebar: false,
             theme_variant: ThemeVariant::Mocha,
@@ -81,6 +85,10 @@ impl App {
             selection_end: None,
             selecting: false,
             context_menu: None,
+            exclude_dirs: Vec::new(),
+            show_excludes: false,
+            exclude_input: String::new(),
+            exclude_selected: 0,
         }
     }
 
