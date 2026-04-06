@@ -26,6 +26,7 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
     about = "Realtime Markdown - TUI viewer with live reload"
 )]
 struct Cli {
+    #[arg(default_value = ".")]
     path: PathBuf,
 }
 
